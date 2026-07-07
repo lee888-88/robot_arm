@@ -47,6 +47,7 @@ DMA_HandleTypeDef hdma_adc1;
 
 /* USER CODE BEGIN PV */
 volatile uint16_t adc_values[4];  /* DMA circular buffer: [0]=PA0, [1]=PA1, [2]=PA2, [3]=PA3 */
+uint32_t adc_filtered[4] = {0};  /* EMA filtered values */
 TIM_HandleTypeDef htim1;          /* TIM1: 4-ch PWM, PA8-11 */
 TIM_HandleTypeDef htim3;          /* TIM3: 1-ch PWM, PA6 */
 /* USER CODE END PV */
@@ -145,11 +146,15 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    /* ── Read 4 potentiometers → map to servo pulse (reversed: ADC↑ = pulse↓ = angle↓) ── */
-    uint32_t pulse_base     = map_range(adc_values[0], 600, 3500, SERVO_MAX_PULSE, SERVO_MIN_PULSE);
-    uint32_t pulse_shoulder = map_range(adc_values[1], 600, 3500, SERVO_MAX_PULSE, SERVO_MIN_PULSE);
-    uint32_t pulse_elbow    = map_range(adc_values[2], 600, 3500, SERVO_MAX_PULSE, SERVO_MIN_PULSE);
-    uint32_t pulse_wrist    = map_range(adc_values[3], 600, 3500, SERVO_MAX_PULSE, SERVO_MIN_PULSE);
+    /* ── EMA filter: α = 1/8 ── */
+    for (int i = 0; i < 4; i++)
+        adc_filtered[i] = (adc_filtered[i] * 7 + adc_values[i]) / 8;
+
+    /* ── Filtered ADC → servo pulse (reversed: ADC↑ = pulse↓ = angle↓) ── */
+    uint32_t pulse_base     = map_range(adc_filtered[0], 600, 3500, SERVO_MAX_PULSE, SERVO_MIN_PULSE);
+    uint32_t pulse_shoulder = map_range(adc_filtered[1], 600, 3500, SERVO_MAX_PULSE, SERVO_MIN_PULSE);
+    uint32_t pulse_elbow    = map_range(adc_filtered[2], 600, 3500, SERVO_MAX_PULSE, SERVO_MIN_PULSE);
+    uint32_t pulse_wrist    = map_range(adc_filtered[3], 600, 3500, SERVO_MAX_PULSE, SERVO_MIN_PULSE);
 
     /* Update 4 joint servos */
     SERVO_BASE(pulse_base);
@@ -254,7 +259,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_55CYCLES_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_239CYCLES_5;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -400,7 +405,7 @@ static void OLED_DisplayData(void)
 
     /* Potentiometer channels 1-4 on pages 0-3 */
     for (uint8_t i = 0; i < 4; i++) {
-        raw = adc_values[i];
+        raw = adc_filtered[i];
 
         /* Voltage: fixed-point integer to avoid newlib-nano %f issue */
         mv    = (uint32_t)raw * 3300U / 4096U;

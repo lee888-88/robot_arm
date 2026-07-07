@@ -71,6 +71,7 @@ void Error_Handler(void);
 extern TIM_HandleTypeDef htim1;
 extern TIM_HandleTypeDef htim3;
 extern volatile uint16_t adc_values[4];
+extern uint32_t adc_filtered[4];
 
 uint32_t map_range(uint32_t value, uint32_t in_min, uint32_t in_max,
                    uint32_t out_min, uint32_t out_max);
