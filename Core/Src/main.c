@@ -85,7 +85,7 @@ int main(void)
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-  HAL_Init();
+    HAL_Init();
 
   /* USER CODE BEGIN Init */
 
@@ -146,9 +146,16 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    /* ── EMA filter: α = 1/8 ── */
-    for (int i = 0; i < 4; i++)
-        adc_filtered[i] = (adc_filtered[i] * 7 + adc_values[i]) / 8;
+    /* ── Adaptive EMA filter ── */
+    for (int i = 0; i < 4; i++) {
+        int32_t diff = (int32_t)adc_values[i] - (int32_t)adc_filtered[i];
+        if (diff < 0) diff = -diff;
+
+        if (diff > 50)
+            adc_filtered[i] = (adc_filtered[i] * 3 + adc_values[i]) / 4;
+        else
+            adc_filtered[i] = (adc_filtered[i] * 15 + adc_values[i]) / 16;
+    }
 
     /* ── Filtered ADC → servo pulse (reversed: ADC↑ = pulse↓ = angle↓) ── */
     uint32_t pulse_base     = map_range(adc_filtered[0], 600, 3500, SERVO_MAX_PULSE, SERVO_MIN_PULSE);
