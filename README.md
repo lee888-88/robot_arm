@@ -1,264 +1,298 @@
-# 5-Axis Robotic Arm Controller (STM32F103C8T6)
+# 五轴机械臂控制器 (STM32F103C8T6)
 
 [![MCU](https://img.shields.io/badge/MCU-STM32F103C8T6-blue)](https://www.st.com/en/microcontrollers-microprocessors/stm32f103c8.html)
 [![HAL](https://img.shields.io/badge/HAL-STM32Cube_F1_v1.8.7-green)](https://github.com/STMicroelectronics/STM32CubeF1)
-[![Build](https://img.shields.io/badge/build-CMake%20%2B%20Ninja-orange)](#build--flash)
-[![Compiler](https://img.shields.io/badge/compiler-arm--none--eabi--gcc-lightgrey)](#build--flash)
+[![Build](https://img.shields.io/badge/build-CMake%20%2B%20Ninja-orange)](#编译与烧录)
+[![Compiler](https://img.shields.io/badge/compiler-arm--none--eabi--gcc-lightgrey)](#编译与烧录)
 
-A bare-metal STM32F103C8T6 firmware that drives a **5-axis robotic arm** (4 joints + gripper) using 4 potentiometers for manual control and a push button for gripper toggle. Real-time status is displayed on a 128×64 SSD1306 OLED via software I2C.
-
----
-
-## Table of Contents
-
-- [Features](#features)
-- [Hardware Requirements](#hardware-requirements)
-- [Pinout & Wiring](#pinout--wiring)
-- [System Architecture](#system-architecture)
-- [Build & Flash](#build--flash)
-- [Usage](#usage)
-- [Planned Enhancements](#planned-enhancements)
-- [Project Structure](#project-structure)
-- [Troubleshooting](#troubleshooting)
+基于 STM32F103C8T6 的**五轴机械臂**裸机固件。4 个电位器分别控制底座、肩部、肘部、腕部舵机，按键控制夹爪开合，实时状态通过 SSD1306 OLED 显示。
 
 ---
 
-## Features
+## 目录
 
-- **5 servos** driven by hardware PWM (TIM1 4-channel + TIM3 1-channel) at 50 Hz, 1 μs resolution
-- **4 potentiometers** sampled by ADC1 via DMA circular scan mode — zero CPU polling overhead
-- **Adaptive EMA filter** on ADC readings: fast response on large changes, heavy smoothing on steady signals
-- **Gripper button** on PA4 (internal pull-up), press to close, release to open
-- **SSD1306 128×64 OLED** status display via software I2C (PB8/PB9), showing raw ADC, voltage, and computed servo angle
-- **Direct CCR register writes** via `__HAL_TIM_SET_COMPARE()` — bypasses HAL overhead for low-latency servo updates
-- **CubeMX-compatible**: all custom code lives inside `USER CODE BEGIN` / `USER CODE END` guards
+- [特性](#特性)
+- [硬件需求](#硬件需求)
+- [引脚分配与接线](#引脚分配与接线)
+- [系统架构](#系统架构)
+- [编译与烧录](#编译与烧录)
+- [使用方法](#使用方法)
+- [后续规划](#后续规划)
+- [项目结构](#项目结构)
+- [常见问题](#常见问题)
 
 ---
 
-## Hardware Requirements
+## 特性
 
-| Component | Qty | Notes |
+- **5 路舵机** 由硬件 PWM 驱动 (TIM1 四通道 + TIM3 单通道)，50 Hz，1 μs 分辨率
+- **4 通道 ADC** 通过 DMA 循环扫描模式采集电位器，零 CPU 轮询开销
+- **自适应 EMA 滤波**：大变化时快速响应，稳定时重度平滑，消除电位器抖动
+- **夹爪按键** 接 PA4（内部上拉），按下闭合、松开张开
+- **SSD1306 128×64 OLED** 通过软件 I2C (PB8/PB9) 实时显示 ADC 原始值、电压、舵机角度
+- **直接写 CCR 寄存器** (`__HAL_TIM_SET_COMPARE()`)，绕过 HAL 开销，实现低延迟舵机更新
+- **兼容 CubeMX**：自定义代码全部写在 `USER CODE BEGIN` / `USER CODE END` 保护区内
+
+---
+
+## 硬件需求
+
+| 元件 | 数量 | 备注 |
 |---|---|---|
-| STM32F103C8T6 (Blue Pill / custom) | 1 | 64 KB Flash, 20 KB SRAM |
-| SG90 / MG996R servos (5 V) | 5 | Or any servo using 500–2500 μs pulse |
-| 10 kΩ potentiometers | 4 | Linear taper, wired as voltage dividers |
-| SSD1306 128×64 OLED (I2C) | 1 | Address 0x3C |
-| Push button + 10 kΩ pull-up resistor (optional) | 1 | Internal pull-up on PA4 can be used instead |
-| External 5–6 V power supply for servos | 1 | **Do not power servos from STM32's 3.3 V regulator!** |
-| USB-TTL serial adapter (optional) | 1 | For debugging via USART3 |
+| STM32F103C8T6 (Blue Pill / 最小系统板) | 1 | 64 KB Flash，20 KB SRAM |
+| SG90 / MG996R 舵机 (5 V) | 5 | 或任何 500–2500 μs 脉宽的舵机 |
+| 10 kΩ 电位器 | 4 | 线性型，接成分压电路 |
+| SSD1306 128×64 OLED (I2C) | 1 | 地址 0x3C |
+| 轻触按键 | 1 | 使用 PA4 内部上拉，可不外接电阻 |
+| 外部 5–6 V 电源（舵机供电） | 1 | **绝不能从 STM32 3.3 V 引脚给舵机供电！** |
+| USB 转 TTL 串口模块（可选） | 1 | 通过 USART3 输出调试信息 |
 
 ---
 
-## Pinout & Wiring
+## 引脚分配与接线
 
-### Servo Connections
+### 舵机连接
 
-| Servo | Timer | Channel | Pin | Control Macro |
+| 舵机 | 定时器 | 通道 | 引脚 | 控制宏 |
 |---|---|---|---|---|
-| Base | TIM1 | CH1 | PA8 | `SERVO_BASE(pulse)` |
-| Shoulder | TIM1 | CH2 | PA9 | `SERVO_SHOULDER(pulse)` |
-| Elbow | TIM1 | CH3 | PA10 | `SERVO_ELBOW(pulse)` |
-| Wrist | TIM1 | CH4 | PA11 | `SERVO_WRIST(pulse)` |
-| Hand / Gripper | TIM3 | CH1 | PA6 | `SERVO_HAND(pulse)` |
+| 底座 | TIM1 | CH1 | PA8 | `SERVO_BASE(pulse)` |
+| 肩部 | TIM1 | CH2 | PA9 | `SERVO_SHOULDER(pulse)` |
+| 肘部 | TIM1 | CH3 | PA10 | `SERVO_ELBOW(pulse)` |
+| 腕部 | TIM1 | CH4 | PA11 | `SERVO_WRIST(pulse)` |
+| 夹爪 | TIM3 | CH1 | PA6 | `SERVO_HAND(pulse)` |
 
-### Sensor & Peripheral Connections
+### 传感器与外设连接
 
-| Function | Pin | Mode | Details |
+| 功能 | 引脚 | 模式 | 说明 |
 |---|---|---|---|
-| Potentiometer – Base | PA0 | ADC1_IN0 | 3.3 V — Pot — GND, wiper to PA0 |
-| Potentiometer – Shoulder | PA1 | ADC1_IN1 | 3.3 V — Pot — GND, wiper to PA1 |
-| Potentiometer – Elbow | PA2 | ADC1_IN2 | 3.3 V — Pot — GND, wiper to PA2 |
-| Potentiometer – Wrist | PA3 | ADC1_IN3 | 3.3 V — Pot — GND, wiper to PA3 |
-| Gripper Button | PA4 | GPIO Input, Pull-up | Button to GND |
-| OLED SCL | PB8 | GPIO Output (software I2C) | SSD1306 SCL |
-| OLED SDA | PB9 | GPIO Output/Input | SSD1306 SDA (0x3C) |
-| USART3 TX | PB10 | AF Push-Pull | USB-TTL RX (115200 baud, 8N1) |
-| USART3 RX | PB11 | GPIO Input | USB-TTL TX |
-| SWDIO / SWCLK | PA13 / PA14 | Debug (reserved) | Do not repurpose |
+| 电位器 — 底座 | PA0 | ADC1_IN0 | 3.3 V — 电位器 — GND，中间脚接 PA0 |
+| 电位器 — 肩部 | PA1 | ADC1_IN1 | 3.3 V — 电位器 — GND，中间脚接 PA1 |
+| 电位器 — 肘部 | PA2 | ADC1_IN2 | 3.3 V — 电位器 — GND，中间脚接 PA2 |
+| 电位器 — 腕部 | PA3 | ADC1_IN3 | 3.3 V — 电位器 — GND，中间脚接 PA3 |
+| 夹爪按键 | PA4 | GPIO 输入，上拉 | 按键另一端接地 |
+| OLED SCL | PB8 | GPIO 输出（软 I2C） | 接 SSD1306 SCL |
+| OLED SDA | PB9 | GPIO 输出/输入 | 接 SSD1306 SDA (地址 0x3C) |
+| USART3 TX | PB10 | 复用推挽输出 | 接 USB-TTL RX (115200 波特率, 8N1) |
+| USART3 RX | PB11 | GPIO 输入 | 接 USB-TTL TX |
+| SWDIO / SWCLK | PA13 / PA14 | 调试口（保留） | 不要用作其他功能 |
 
-### Power Wiring (Critical)
+### 电源接线
 
 ```
-Servo Power Supply (5 V – 6 V)
- ├─ VCC (+)  →  All servo red wires
- └─ GND (-)  →  All servo brown wires
-               →  STM32 GND ⬅ must share common ground!
+舵机独立电源 (5 V – 6 V)
+ ├─ 正极 → 所有舵机红线 (VCC)
+ └─ 负极 → 所有舵机棕线 (GND)
+          → STM32 GND  ⬅ 必须共地！
 
 STM32
- └─ Powered via USB or external 3.3 V
+ └─ 通过 USB 或外部 3.3 V 供电
 
-Potentiometers
- ├─ Pin 1 → 3.3 V
- ├─ Pin 2 (wiper) → PA0 / PA1 / PA2 / PA3
- └─ Pin 3 → GND
+电位器接线
+ ├─ 脚 1 → 3.3 V
+ ├─ 脚 2 (中间脚) → PA0 / PA1 / PA2 / PA3
+ └─ 脚 3 → GND
 ```
 
-> **⚠️ Never power servos from the STM32's 3.3 V pin.** Servos can draw >1 A at stall, which will burn the onboard regulator or cause brown-out resets. Always use a separate 5 V supply and tie the grounds together.
+> **⚠️ 舵机绝不能从 STM32 的 3.3 V 引脚取电。** 舵机堵转电流可能超过 1 A，会烧毁板载稳压器或导致芯片反复复位。务必使用独立 5 V 电源，并将两地线连接在一起。
+
+### 引脚占用全图
+
+```
+PA0  — ADC_IN0     [电位器-底座]
+PA1  — ADC_IN1     [电位器-肩部]
+PA2  — ADC_IN2     [电位器-肘部]
+PA3  — ADC_IN3     [电位器-腕部]
+PA4  — GPIO 输入   [夹爪按键, 上拉]
+PA5  — 空闲
+PA6  — TIM3_CH1    [舵机-夹爪]
+PA7  — 空闲
+PA8  — TIM1_CH1    [舵机-底座]
+PA9  — TIM1_CH2    [舵机-肩部]
+PA10 — TIM1_CH3    [舵机-肘部]
+PA11 — TIM1_CH4    [舵机-腕部]
+PA12 — 空闲
+PA13 — SWDIO       [调试口·保留]
+PA14 — SWCLK       [调试口·保留]
+PA15 — 空闲
+PB0–PB7 — 空闲
+PB8–PB9 — 软 I2C  [OLED]
+PB10 — USART3_TX   [串口调试]
+PB11 — USART3_RX   [串口调试]
+PB12–PB15 — 空闲
+PC13–PC15 — 空闲
+```
 
 ---
 
-## System Architecture
+## 系统架构
 
 ```
-[4× Potentiometers] ──analog──> PA0–PA3 ──> ADC1 ──DMA1_CH1──> adc_values[4]
-                                                                      │
-                                                          Adaptive EMA Filter
-                                                                      │
-                                                             map_range() + pulse_to_angle()
-                                                                      │
-              ┌────────────────────┬────────────────┬──────────────────┤
-              │                    │                │                  │
-   SERVO_BASE ──TIM1_CH1──> PA8   SERVO_SHOULDER   SERVO_ELBOW    SERVO_WRIST
-              │                    │                │                  │
-         TIM1_CH2──> PA9      TIM1_CH3──> PA10  TIM1_CH4──> PA11  TIM3_CH1──> PA6
-                                                                       │
-                                                              [Hand/Gripper]
+[4× 电位器] ──模拟──> PA0–PA3 ──> ADC1 ──DMA1_CH1──> adc_values[4]
+                                                                  │
+                                                      自适应 EMA 滤波
+                                                                  │
+                                                      map_range() + pulse_to_angle()
+                                                                  │
+         ┌─────────────────┬─────────────────┬──────────────────────┤
+         │                 │                 │                      │
+SERVO_BASE ──TIM1_CH1──>PA8  SERVO_SHOULDER   SERVO_ELBOW     SERVO_WRIST
+         │                 │                 │                      │
+    TIM1_CH2──>PA9    TIM1_CH3──>PA10    TIM1_CH4──>PA11    TIM3_CH1──>PA6
+                                                                  │
+                                                          [夹爪/手爪]
 
-[Gripper Button] ──PA4──> digitalRead ──> HAND open / close
-[SSD1306 OLED]   ──PB8/PB9──> software I2C ──> real-time status display
+[夹爪按键] ──PA4──> 数字读取 ──> HAND 开/关
+[SSD1306 OLED] ──PB8/PB9──> 软 I2C ──> 实时状态显示
 ```
 
-### Clock Tree
+### 时钟树
 
 ```
 HSE 8 MHz → PLL ×9 → SYSCLK 72 MHz
  ├─ AHB  /1  → HCLK  = 72 MHz
- ├─ APB1 /2  → PCLK1 = 36 MHz  →  TIM3 clock = 72 MHz (APB1 ×2 rule)
- ├─ APB2 /1  → PCLK2 = 72 MHz  →  TIM1 clock = 72 MHz
- └─ ADC prescaler /6 → ADCCLK = 12 MHz
+ ├─ APB1 /2  → PCLK1 = 36 MHz  →  TIM3 时钟 = 72 MHz (APB1 ×2 规则)
+ ├─ APB2 /1  → PCLK2 = 72 MHz  →  TIM1 时钟 = 72 MHz
+ └─ ADC 预分频 /6 → ADCCLK = 12 MHz
 ```
 
-### Servo Pulse Mapping
+> **关键提醒**：APB1 预分频为 /2 时，挂载在 APB1 上的定时器（如 TIM3）时钟会翻倍，即 PCLK1 × 2 = 72 MHz，与 TIM1 相同。
 
-| Pulse Width (μs) | CCR Value | Servo Angle |
+### 舵机脉宽映射
+
+| 脉宽 (μs) | CCR 值 | 舵机角度 |
 |---|---|---|
 | 650 | 650 | 0° |
-| 1500 | 1500 | 90° (mid) |
+| 1500 | 1500 | 90° (中位) |
 | 2350 | 2350 | 180° |
 
-**Mapping direction is reversed**: High ADC reading (potentiometer at one extreme) → short pulse → 0°, low ADC reading → long pulse → 180°. This matches a physical potentiometer panel layout.
+**映射方向为反向**：ADC 读值高（电位器一端极限）→ 脉宽短 → 角度 0°；ADC 读值低 → 脉宽长 → 角度 180°。这符合常见的电位器控制面板布局。
 
-Gripper positions: `HAND_OPEN = 439 μs`, `HAND_CLOSE = 879 μs`.
+实测电位器范围约 600–3500（12 位 ADC），映射公式：
+
+```
+pulse = 2350 - (adc - 600) × 1700 / 2900
+```
+
+夹爪位置：`HAND_OPEN = 439 μs`，`HAND_CLOSE = 879 μs`。
 
 ---
 
-## Build & Flash
+## 编译与烧录
 
-### Prerequisites
+### 环境准备
 
-- **Toolchain**: `arm-none-eabi-gcc` (ARM GNU Toolchain)
-- **Build system**: CMake ≥ 3.22 + Ninja
-- **Flash tool**: OpenOCD or STM32CubeProgrammer
-- **Debug probe**: ST-Link V2 (SWD on PA13/PA14)
+- **工具链**：`arm-none-eabi-gcc` (ARM GNU Toolchain)
+- **构建系统**：CMake ≥ 3.22 + Ninja
+- **烧录工具**：OpenOCD 或 STM32CubeProgrammer
+- **调试器**：ST-Link V2 (通过 PA13/PA14 SWD 接口)
 
-### Build
+### 编译
 
 ```bash
-# 1. Configure
+# 1. 配置项目（必须使用 preset）
 cmake --preset Debug
 
-# 2. Build
+# 2. 编译
 cmake --build build/Debug
 ```
 
-Build artifacts are in `build/Debug/`: `dianweitest.elf`, `dianweitest.hex`, `dianweitest.map`.
+编译产物在 `build/Debug/` 目录下：`dianweitest.elf`、`dianweitest.hex`、`dianweitest.map`。
 
-### Flash
+### 烧录
 
 ```bash
-# Using OpenOCD + ST-Link
+# 使用 OpenOCD + ST-Link
 openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
   -c "program build/Debug/dianweitest.elf verify reset exit"
 ```
 
-### IDE Support
+### IDE 支持
 
-A `.clangd` file is committed and points to `build/Debug/compile_commands.json` for IntelliSense. The `.ioc` file can be opened with STM32CubeMX ≥ 6.17 to regenerate peripheral init code.
+项目已包含 `.clangd` 配置文件，指向 `build/Debug/compile_commands.json`，可直接用于 VSCode + clangd 的代码补全和跳转。`.ioc` 文件可用 STM32CubeMX ≥ 6.17 打开以重新生成外设初始化代码。
 
 ---
 
-## Usage
+## 使用方法
 
-1. **Power up** the STM32 and the external servo power supply.
-2. The OLED will initialize and show real-time potentiometer readings.
-3. **Turn the 4 potentiometers** to control Base, Shoulder, Elbow, and Wrist servos in real time.
-4. **Press the button** (PA4) to close the gripper; release to open it.
-5. (Optional) Connect a USB-TTL serial adapter to PB10/PB11 to view debug output at 115200 baud.
+1. **上电**：先给 STM32 上电，再给舵机独立电源上电。
+2. OLED 初始化后显示实时电位器读数。
+3. **旋转 4 个电位器** 分别实时控制底座、肩部、肘部、腕部舵机。
+4. **按下按键** (PA4) 闭合夹爪；松开按键则张开夹爪。
+5. （可选）用 USB-TTL 串口模块连接 PB10/PB11，可在串口助手查看调试输出（115200 波特率）。
 
-### OLED Display Layout
+### OLED 显示界面
 
 ```
-Pot1: 2048  1.65V  90   ← raw ADC, voltage, computed angle
+Pot1: 2048  1.65V  90   ← 原始 ADC 值, 电压, 计算角度
 Pot2: 1024  0.82V  45
 Pot3: 3072  2.47V 135
 Pot4: 1500  1.21V  90
-SW: OPEN     Hand:OPN   ← button state + gripper state
+SW: OPEN     Hand:OPN   ← 按键状态 + 夹爪状态
 ```
 
-> **Note**: Voltage is computed with fixed-point integer arithmetic (`raw × 3300 / 4096`) to avoid `%f` in newlib-nano, which would pull in heap allocation.
+> 电压计算采用定点整数运算 (`raw × 3300 / 4096`)，避免 newlib-nano 的 `%f` 格式化引发堆分配问题。
 
 ---
 
-## Planned Enhancements
+## 后续规划
 
-- [ ] Inverse kinematics solver for coordinate-based positioning
-- [ ] PID controller with encoder feedback for precise angle control
-- [ ] UART command protocol for PC / ROS integration
-- [ ] Store and replay motion sequences
-- [ ] RTOS-based multitasking
+- [ ] 逆运动学解算，支持坐标定位
+- [ ] 编码器反馈 + PID 闭环角度控制
+- [ ] UART 指令协议，对接上位机 / ROS
+- [ ] 动作录制与回放
+- [ ] RTOS 多任务改造
 
 ---
 
-## Project Structure
+## 项目结构
 
 ```
 dianweitest/
-├── CMakeLists.txt              # Top-level CMake config
-├── CMakePresets.json           # Build presets (Debug)
-├── dianweitest.ioc             # STM32CubeMX project file
-├── startup_stm32f103xb.s       # Startup assembly
-├── STM32F103XX_FLASH.ld        # Linker script
+├── CMakeLists.txt              # 顶层 CMake 配置
+├── CMakePresets.json           # 构建预设 (Debug)
+├── dianweitest.ioc             # STM32CubeMX 项目文件
+├── startup_stm32f103xb.s       # 启动汇编文件
+├── STM32F103XX_FLASH.ld        # 链接脚本
 ├── cmake/
-│   └── stm32cubemx/            # CubeMX-generated CMake helpers
+│   └── stm32cubemx/            # CubeMX 生成的 CMake 辅助脚本
 ├── Core/
 │   ├── Inc/
-│   │   ├── main.h              # Servo macros, extern declarations
-│   │   ├── soft_i2c.h          # Software I2C header
-│   │   └── ssd1306.h           # OLED driver header
+│   │   ├── main.h              # 舵机宏定义、全局 extern 声明
+│   │   ├── soft_i2c.h          # 软件 I2C 头文件
+│   │   └── ssd1306.h           # OLED 驱动头文件
 │   └── Src/
-│       ├── main.c              # Entry point + main loop
-│       ├── soft_i2c.c          # Software I2C (DWT-based μs delays)
-│       └── ssd1306.c           # SSD1306 128×64 driver
-└── Drivers/                    # STM32CubeF1 HAL library
+│       ├── main.c              # 主程序入口 + 主循环
+│       ├── soft_i2c.c          # 软件 I2C（基于 DWT 微秒延时）
+│       └── ssd1306.c           # SSD1306 128×64 驱动
+└── Drivers/                    # STM32CubeF1 HAL 库
 ```
 
-> **CubeMX code generation rule**: Custom code **must** stay inside `USER CODE BEGIN` / `USER CODE END` markers. Everything outside those markers is overwritten when regenerating from the `.ioc` file.
+> **CubeMX 代码生成规则**：自定义代码**必须**写在 `USER CODE BEGIN` / `USER CODE END` 标记之间。标记之外的代码在重新生成 `.ioc` 时会被覆盖。
 
 ---
 
-## Troubleshooting
+## 常见问题
 
-| Symptom | Likely Cause | Fix |
+| 现象 | 可能原因 | 解决方法 |
 |---|---|---|
-| Servos not moving | No external power | Connect a separate 5 V supply to servos |
-| Servos jitter / brown-out | Powering servos from STM32 3.3 V | Use external 5 V; tie grounds together |
-| Servos move erratically | Missing common ground | Connect servo PSU GND ↔ STM32 GND |
-| OLED blank | I2C wiring or address | Check PB8→SCL, PB9→SDA; address 0x3C |
-| ADC values stuck at 0 | Pins not in analog mode | Verify GPIO init sets `GPIO_MODE_ANALOG` for PA0–PA3 |
-| ADC values stuck at 4095 after flashing | ADC calibration missing | Ensure `HAL_ADCEx_Calibration_Start()` runs before `HAL_ADC_Start_DMA()` |
-| Build fails with "TIM3 clock = 36 MHz" | APB1 ×2 rule not applied | TIM3 gets 72 MHz because PCLK1=36 MHz → ×2 |
-| `printf` produces nothing | No MicroLIB | Use fixed-point math on OLED instead; or enable MicroLIB in linker |
-| CubeMX overwrites custom code | Code outside `USER CODE` guards | Move all custom code inside `BEGIN`/`END` markers |
+| 舵机不转 | 舵机没有外部供电 | 给舵机接入独立 5 V 电源 |
+| 舵机抖动 / 芯片复位 | 从 STM32 3.3 V 给舵机供电 | 改用外部 5 V 供电，两地共地 |
+| 舵机动作异常 | 未共地 | 将舵机电源 GND ↔ STM32 GND 连通 |
+| OLED 无显示 | I2C 接线错误或地址不对 | 检查 PB8→SCL, PB9→SDA；地址为 0x3C |
+| ADC 值始终为 0 | 引脚未设为模拟模式 | 确认 GPIO 初始化中 PA0–PA3 为 `GPIO_MODE_ANALOG` |
+| 烧录后 ADC 值卡在 4095 | 缺少 ADC 校准 | 确保 `HAL_ADCEx_Calibration_Start()` 在 `HAL_ADC_Start_DMA()` 之前执行 |
+| printf 无输出 | 未启用 MicroLIB | OLED 使用定点运算替代；或链接器中启用 MicroLIB |
+| CubeMX 重新生成后代码丢失 | 代码写在 USER CODE 之外 | 将所有自定义代码移入 `BEGIN`/`END` 保护区内 |
 
 ---
 
-## References
+## 参考文档
 
-- [STM32F103C8T6 Datasheet](https://www.st.com/resource/en/datasheet/stm32f103c8.pdf)
-- [STM32CubeF1 HAL Documentation](https://www.st.com/en/embedded-software/stm32cubef1.html)
-- [ARM GCC Toolchain](https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain)
+- [STM32F103C8T6 数据手册](https://www.st.com/resource/en/datasheet/stm32f103c8.pdf)
+- [STM32CubeF1 HAL 文档](https://www.st.com/en/embedded-software/stm32cubef1.html)
+- [ARM GCC 工具链](https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain)
 - [OpenOCD](https://openocd.org/)
 
 ---
 
-*Based on an Arduino reference design — ported from Adafruit PWM driver + `analogRead`/`map()` to bare-metal STM32 HAL with DMA-driven ADC and hardware PWM.*
+*本项目基于 Arduino 参考设计，从 Adafruit PWM 驱动 + `analogRead`/`map()` 移植至 STM32 HAL 裸机平台，采用 DMA 驱动 ADC 采集与硬件 PWM 输出。*
